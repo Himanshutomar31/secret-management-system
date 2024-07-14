@@ -1,39 +1,102 @@
 import streamlit as st
-import requests
+import csv
+import json
+import os
 
+# Streamlit configurations
 st.set_page_config(page_title="Secret Management System", layout="wide")
 
-BASE_URL = ""  
-MODE = "demo"  
+BASE_URL = "http://localhost:9000"
+MODE = "demo"  # demo
 
-if "projects" not in st.session_state:
-    st.session_state.projects = [
-        {"id": 1, "name": "Project Alpha"},
-        {"id": 2, "name": "Project Beta"}
-    ]
-if "secrets" not in st.session_state:
-    st.session_state.secrets = {
-        1: [
-            {"id": 1, "name": "API_KEY", "value": "abc123"},
-            {"id": 2, "name": "DB_PASSWORD", "value": "pass@123"}
-        ],
-        2: [
-            {"id": 1, "name": "API_SECRET", "value": "xyz789"},
-            {"id": 2, "name": "SERVICE_ACCOUNT", "value": "service@123"}
-        ]
-    }
+# Files for storing data
+USER_FILE = "users.csv"
+PROJECT_FILE = "projects.json"
+SECRET_FILE = "secrets.json"
 
-# Function to simulate authentication
+# Initialize the user file with an admin user if it doesn't exist
+def init_user_file():
+    if not os.path.exists(USER_FILE):
+        with open(USER_FILE, mode='w', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow(["username", "email", "password", "role"])
+            writer.writerow(["admin", "admin@example.com", "admin", "admin"])
+
+# Initialize the projects file if it doesn't exist
+def init_project_file():
+    if not os.path.exists(PROJECT_FILE):
+        with open(PROJECT_FILE, mode='w') as file:
+            json.dump([
+                {"id": 1, "name": "Project Alpha", "user": "admin"},
+                {"id": 2, "name": "Project Beta", "user": "admin"}
+            ], file)
+
+# Initialize the secrets file if it doesn't exist
+def init_secret_file():
+    if not os.path.exists(SECRET_FILE):
+        with open(SECRET_FILE, mode='w') as file:
+            json.dump({
+                "1": [
+                    {"id": 1, "name": "API_KEY", "value": "abc123"},
+                    {"id": 2, "name": "DB_PASSWORD", "value": "pass@123"}
+                ],
+                "2": [
+                    {"id": 1, "name": "API_SECRET", "value": "xyz789"},
+                    {"id": 2, "name": "SERVICE_ACCOUNT", "value": "service@123"}
+                ]
+            }, file)
+
+init_user_file()
+init_project_file()
+init_secret_file()
+
+# Function to read users from the CSV file
+def read_users():
+    users = []
+    with open(USER_FILE, mode='r') as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            users.append(row)
+    return users
+
+# Function to read projects from the JSON file
+def read_projects():
+    with open(PROJECT_FILE, mode='r') as file:
+        projects = json.load(file)
+    return projects
+
+# Function to read secrets from the JSON file
+def read_secrets():
+    with open(SECRET_FILE, mode='r') as file:
+        secrets = json.load(file)
+    return secrets
+
+# Function to write projects to the JSON file
+def write_projects(projects):
+    with open(PROJECT_FILE, mode='w') as file:
+        json.dump(projects, file)
+
+# Function to write secrets to the JSON file
+def write_secrets(secrets):
+    with open(SECRET_FILE, mode='w') as file:
+        json.dump(secrets, file)
+
+# Function to authenticate user from the CSV file
 def authenticate(username, password):
-    if username == "admin" and password == "admin":
-        return {"token": "dummy_token"}
+    users = read_users()
+    for user in users:
+        if user["username"] == username and user["password"] == password:
+            return {"token": "dummy_token", "role": user["role"]}
     return None
 
-# Register API call
+# Register a new user in the CSV file
 def register_user(username, email, password):
     if MODE == "demo":
+        with open(USER_FILE, mode='a', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow([username, email, password, "user"])
         return {"status_code": 201}
-    response = requests.post(f"{BASE_URL}/register", json={
+    response = requests.post(f"{BASE_URL}/api/register", json={
         "username": username,
         "email": email,
         "password": password
@@ -43,8 +106,11 @@ def register_user(username, email, password):
 # Login API call
 def login_user(username, password):
     if MODE == "demo":
-        return {"status_code": 200, "token": "dummy_token"}
-    response = requests.post(f"{BASE_URL}/login", json={
+        auth_response = authenticate(username, password)
+        if auth_response:
+            return {"status_code": 200, "token": auth_response["token"], "role": auth_response["role"]}
+        return {"status_code": 401}
+    response = requests.post(f"{BASE_URL}/api/login", json={
         "username": username,
         "password": password
     })
@@ -53,39 +119,59 @@ def login_user(username, password):
 # Create project API call
 def create_project_api(project_name):
     if MODE == "demo":
-        new_id = max([p["id"] for p in st.session_state.projects]) + 1
-        st.session_state.projects.append({"id": new_id, "name": project_name})
-        st.session_state.secrets[new_id] = []
+        projects = read_projects()
+        new_id = max([p["id"] for p in projects], default=0) + 1
+        projects.append({"id": new_id, "name": project_name, "user": "admin"})
+        write_projects(projects)
+        
+        secrets = read_secrets()
+        secrets[new_id] = []
+        write_secrets(secrets)
+        
         return {"status_code": 201}
-    response = requests.post(f"{BASE_URL}/projects", json={"name": project_name}, headers={
+    response = requests.post(f"{BASE_URL}/api/projects", json={"name": project_name}, headers={
         "Authorization": f"Bearer {st.session_state['token']}"})
     return response
 
 # Add secret API call
 def add_secret_api(project_id, secret_name, secret_value):
     if MODE == "demo":
-        new_id = len(st.session_state.secrets[project_id]) + 1
-        st.session_state.secrets[project_id].append({"id": new_id, "name": secret_name, "value": secret_value})
+        secrets = read_secrets()
+        new_id = len(secrets.get(str(project_id), [])) + 1
+        secrets[str(project_id)].append({"id": new_id, "name": secret_name, "value": secret_value})
+        write_secrets(secrets)
         return {"status_code": 201}
-    response = requests.post(f"{BASE_URL}/projects/{project_id}/secrets", json={
+    response = requests.post(f"{BASE_URL}/api/projects/{project_id}/secrets", json={
         "name": secret_name,
         "value": secret_value
     }, headers={"Authorization": f"Bearer {st.session_state['token']}"})
+    return response
+
+# Delete secret API call
+def delete_secret_api(project_id, secret_id):
+    if MODE == "demo":
+        secrets = read_secrets()
+        secrets[str(project_id)] = [secret for secret in secrets.get(str(project_id), []) if secret["id"] != secret_id]
+        write_secrets(secrets)
+        return {"status_code": 200}
+    response = requests.delete(f"{BASE_URL}/api/projects/{project_id}/secrets/{secret_id}", headers={
+        "Authorization": f"Bearer {st.session_state['token']}"})
     return response
 
 # Rotate secret API call
 def rotate_project_secret_api(project_id):
     if MODE == "demo":
         return {"status_code": 200}
-    response = requests.post(f"{BASE_URL}/projects/{project_id}/rotate", headers={
+    response = requests.post(f"{BASE_URL}/api/projects/{project_id}/rotate", headers={
         "Authorization": f"Bearer {st.session_state['token']}"})
     return response
 
 # Retrieve secrets API call
 def retrieve_secrets_api(project_id):
     if MODE == "demo":
-        return {"status_code": 200, "secrets": st.session_state.secrets[project_id]}
-    response = requests.get(f"{BASE_URL}/projects/{project_id}/secrets", headers={
+        secrets = read_secrets()
+        return {"status_code": 200, "secrets": secrets.get(str(project_id), [])}
+    response = requests.get(f"{BASE_URL}/api/projects/{project_id}/secrets", headers={
         "Authorization": f"Bearer {st.session_state['token']}"})
     return response
 
@@ -98,8 +184,9 @@ def login():
         auth_response = login_user(username, password)
         if auth_response["status_code"] == 200:
             st.session_state["token"] = auth_response.get("token", "dummy_token")
+            st.session_state["role"] = auth_response.get("role", "user")
             st.session_state["logged_in"] = True
-            st.experimental_rerun()
+            st.rerun()
         else:
             st.error("Invalid username or password")
 
@@ -117,7 +204,8 @@ def main_app():
 # View projects and secrets
 def view_projects():
     st.subheader("Projects")
-    for project in st.session_state.projects:
+    projects = read_projects()
+    for project in projects:
         with st.expander(project["name"]):
             st.subheader("Secrets")
             secrets_response = retrieve_secrets_api(project["id"])
@@ -125,8 +213,13 @@ def view_projects():
                 secrets = secrets_response["secrets"]
                 for secret in secrets:
                     st.write(f"Name: {secret['name']}, Value: {secret['value']}")
+                    if st.button("Delete Secret", key=f"delete_secret_{project['id']}_{secret['id']}"):
+                        delete_secret(project["id"], secret["id"])
 
-            st.button("Add Secret", key=f"add_secret_{project['id']}", on_click=add_secret, args=(project["id"],))
+            if st.button("Add Secret", key=f"add_secret_{project['id']}"):
+                st.session_state["current_project_id"] = project["id"]
+                st.session_state["adding_secret"] = True
+                st.rerun()
             st.button("Rotate Secrets", key=f"rotate_secret_{project['id']}", on_click=rotate_project_secret, args=(project["id"],))
 
 # Create project page
@@ -140,11 +233,11 @@ def create_project():
         else:
             st.error("Failed to create project")
 
-# Add secret function (dummy implementation)
+# Add secret function
 def add_secret(project_id):
     st.session_state["current_project_id"] = project_id
     st.session_state["adding_secret"] = True
-    st.experimental_rerun()
+    st.rerun()
 
 # Rotate project secret function
 def rotate_project_secret(project_id):
@@ -153,6 +246,15 @@ def rotate_project_secret(project_id):
         st.success(f"Secrets for project {project_id} rotated successfully!")
     else:
         st.error("Failed to rotate secrets")
+
+# Delete secret function
+def delete_secret(project_id, secret_id):
+    response = delete_secret_api(project_id, secret_id)
+    if response["status_code"] == 200:
+        st.success(f"Secret {secret_id} deleted successfully from project {project_id}!")
+        st.rerun()
+    else:
+        st.error("Failed to delete secret")
 
 # Handle adding secrets
 def handle_add_secret():
@@ -166,7 +268,7 @@ def handle_add_secret():
             if response["status_code"] == 201:
                 st.success(f"Secret '{secret_name}' added successfully to project {project_id}!")
                 st.session_state["adding_secret"] = False
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.error("Failed to add secret")
 
